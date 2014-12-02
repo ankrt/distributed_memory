@@ -48,29 +48,32 @@ void print_array(double *array, int size)
  * given the size of the array and the number of processors
  * work out the row ranges that each processor will be sent
  */
-struct scatter_spec* get_scatter_spec(int size, int numprocs)
+struct scatter_spec* get_scatter_spec(int rowlen, int numprocs)
 {
-        int innersize = size - 2;
-        int chunksize = innersize / numprocs;
-        int remainder = innersize % numprocs;
-        int i, p;
+        int inner_rowlen = rowlen - 2;
+        int chunk = inner_rowlen / numprocs;
+        int remainder = inner_rowlen % numprocs;
+        int i;
         struct scatter_spec *sspc = malloc(sizeof(struct scatter_spec));
 
         int *allocation = malloc(numprocs * sizeof(int));
-        allocation[0] += size;
-        /*allocation[numprocs] += size;*/
-        for (i = 0; i < numprocs; i++) {
-                allocation[i] = chunksize * size;
-        }
-        p = 0;
-        while (remainder > 0) {
-                allocation[p] += size;
-                remainder--;
-                p++;
-                if (p == numprocs) p = 0;
-        }
-
         int *dsp = malloc(numprocs * sizeof(int));
+
+        // allocate complete rows to processors
+        for (i = 0; i < numprocs; i++) {
+                allocation[i] = chunk * rowlen;
+        }
+        i = 0;
+        while (remainder > 0) {
+                allocation[i] += rowlen;
+                remainder--;
+                i++;
+                if (i == numprocs - 1) i = 0;
+        }
+        allocation[0] += rowlen;
+        allocation[numprocs - 1] += rowlen;
+
+        // get the displacement within the array
         for (i = 0; i < numprocs; i++) {
                 if (i == 0) {
                         dsp[i] = 0;
