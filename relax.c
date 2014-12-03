@@ -6,13 +6,28 @@
 
 // displacements and chunk size
 struct scatter_spec {
-        int *displs, *allocation;
+        int *displacement, *send_count;
 };
+
+/*
+ * handle_args
+ * root process must do a few extra things before starting
+ */
+void handle_args(int argc, char **argv, int* size, int* precision, int* arraylen)
+{
+        if (argc != 3) {
+                fprintf(stderr, "Error: Wrong number of arguments\n");
+                exit(1);
+        } else {
+                *size = atoi(argv[1]);
+                *precision = atoi(argv[2]);
+                *arraylen = *size * *size;
+        }
+}
 
 /*
  * generate_array
  * generate an array and fill with random numbers
- * TODO: choose whether seed is on or off
  */
 double* generate_array(int length, int randwanted)
 {
@@ -54,7 +69,7 @@ struct scatter_spec* get_scatter_spec(int rowlen, int numprocs)
         int chunk = inner_rowlen / numprocs;
         int remainder = inner_rowlen % numprocs;
         int i;
-        struct scatter_spec *sspc = malloc(sizeof(struct scatter_spec));
+        struct scatter_spec *scsp = malloc(sizeof(struct scatter_spec));
 
         int *allocation = malloc(numprocs * sizeof(int));
         int *dsp = malloc(numprocs * sizeof(int));
@@ -81,50 +96,23 @@ struct scatter_spec* get_scatter_spec(int rowlen, int numprocs)
                         dsp[i] = dsp[i - 1] + allocation[i - 1];
                 }
         }
-
-        sspc->displs = dsp;
-        sspc->allocation = allocation;
-        return sspc;
+        scsp->displacement = dsp;
+        scsp->send_count = allocation;
+        return scsp;
 }
 
-/*
- * root_pretask
- * root process must do a few extra things before starting
- */
-void root_pretask(int argc, char **argv, int numprocs)
-{
-        double *array;
-        int size, arraylen, precision;
-        struct scatter_spec *sspc;
+/*void lol()*/
+/*{*/
+        /*array = generate_array(arraylen, 1);*/
+        /*scsp = get_scatter_spec(size, numprocs);*/
 
-        // handle arguments
-        if (argc != 3) {
-                fprintf(stderr, "Error: Wrong number of arguments\n");
-                exit(1);
-        } else {
-                size = atoi(argv[1]);
-                precision = atoi(argv[2]);
-                arraylen = size * size;
-        }
-
-        array = generate_array(arraylen, 1);
-        // get the displacements to pass to the scatter function
-        sspc = get_scatter_spec(size, numprocs);
-        print_array(array, size);
-
-        int i;
-        for (i = 0; i < numprocs; i++) {
-                printf("proc %d starts at %d, using %d elements\n",
-                                i,
-                                sspc->displs[i],
-                                sspc->allocation[i]);
-        }
-
-        free(array);
-        free(sspc->displs);
-        free(sspc->allocation);
-        free(sspc);
-}
+        /*MPI_Scatterv(*/
+                        /*array,*/
+                        /*scsp->send_count,*/
+                        /*scsp->displacement,*/
+                        /*MPI_DOUBLE,*/
+                        /*0,*/
+/*}*/
 
 int main(int argc, char **argv)
 {
@@ -147,9 +135,30 @@ int main(int argc, char **argv)
                         /*myrank,*/
                         /*name);*/
 
+        int size, precision, arraylen;
+        double *sen_array; // send buffer
+        double *rec_array; // receive buffer
+        struct scatter_spec *scsp; // contains send counts and displacements
+        handle_args(argc, argv, &size, &precision, &arraylen);
+        scsp = get_scatter_spec(size, numprocs);
+        rec_array = malloc(scsp->send_count[myrank] * sizeof(double));
         if (myrank == 0) {
-                root_pretask(argc, argv, numprocs);
+                sen_array = generate_array(size, 1);
+        } else {
+                sen_array = NULL;
         }
+
+        MPI_Scatterv(sen_array, scsp->send_count, scsp->displacement, MPI_DOUBLE,
+                        &rec_array[0], arraylen, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+        printf("I will get %d elements\n", scsp->send_count[myrank]);
+
+        free(sen_array);
+        free(scsp->displacement);
+        free(scsp->send_count);
+        free(scsp);
+        // receive scattered pieces
+
         // enter loop, calculating averages
         // gather up pieces of array
         // finish
