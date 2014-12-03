@@ -4,24 +4,19 @@
 #include <math.h>
 #include <mpi.h>
 
-// displacements and chunk size
-struct scatter_spec {
-        int *displacement, *send_count;
-};
-
 /*
  * handle_args
  * root process must do a few extra things before starting
  */
-void handle_args(int argc, char **argv, int* size, int* precision, int* arraylen)
+void handle_args(int argc, char **argv, int* s, int* p, int* alen)
 {
         if (argc != 3) {
                 fprintf(stderr, "Error: Wrong number of arguments\n");
                 exit(1);
         } else {
-                *size = atoi(argv[1]);
-                *precision = atoi(argv[2]);
-                *arraylen = *size * *size;
+                *s = atoi(argv[1]);
+                *p = atoi(argv[2]);
+                *alen = *s * *s;
         }
 }
 
@@ -29,27 +24,25 @@ void handle_args(int argc, char **argv, int* size, int* precision, int* arraylen
  * generate_array
  * generate an array and fill with random numbers
  */
-double* generate_array(int length, int randwanted)
+void generate_array(int length, int randwanted, double* array)
 {
         int i;
-        double *array = malloc(length * sizeof(double));
         if (randwanted) srand(time(NULL));
         for (i = 0; i < length; i++) {
                 array[i] = (double) (rand() % 2);
         }
-        return array;
 }
 
 /*
  * print_array
  * print to stdout in square form
  */
-void print_array(double *array, int size)
+void print_array(double* array, int nrow, int ncol)
 {
         int i, j;
         int index = 0;
-        for (i = 0; i < size; i++) {
-                for (j = 0; j < size; j++) {
+        for (i = 0; i < nrow; i++) {
+                for (j = 0; j < ncol; j++) {
                         printf("%f\t", array[index]);
                         index++;
                 }
@@ -59,60 +52,64 @@ void print_array(double *array, int size)
 }
 
 /*
- * get_ranges
+ * get_indexes
  * given the size of the array and the number of processors
- * work out the row ranges that each processor will be sent
+ * work out the send counts and displacemnets for the array
  */
-struct scatter_spec* get_scatter_spec(int rowlen, int numprocs)
+void get_indexes(int rowlen, int numprocs, int* send_count, int* displacement)
 {
         int inner_rowlen = rowlen - 2;
         int chunk = inner_rowlen / numprocs;
         int remainder = inner_rowlen % numprocs;
         int i;
-        struct scatter_spec *scsp = malloc(sizeof(struct scatter_spec));
 
-        int *allocation = malloc(numprocs * sizeof(int));
-        int *dsp = malloc(numprocs * sizeof(int));
-
-        // allocate complete rows to processors
+        /* allocate complete rows to processors */
         for (i = 0; i < numprocs; i++) {
-                allocation[i] = chunk * rowlen;
+                send_count[i] = chunk * rowlen;
         }
         i = 0;
         while (remainder > 0) {
-                allocation[i] += rowlen;
+                send_count[i] += rowlen;
                 remainder--;
                 i++;
                 if (i == numprocs - 1) i = 0;
         }
-        allocation[0] += rowlen;
-        allocation[numprocs - 1] += rowlen;
+        /* first and last ranked will have direct access to their */
+        /* top and bottom rows respectively - no messages needed */
+        send_count[0] += rowlen;
+        send_count[numprocs - 1] += rowlen;
 
-        // get the displacement within the array
+        /* get the displacement within the array */
         for (i = 0; i < numprocs; i++) {
                 if (i == 0) {
-                        dsp[i] = 0;
+                        displacement[i] = 0;
                 } else {
-                        dsp[i] = dsp[i - 1] + allocation[i - 1];
+                        displacement[i] = displacement[i - 1] +
+                                send_count[i - 1];
                 }
         }
-        scsp->displacement = dsp;
-        scsp->send_count = allocation;
-        return scsp;
 }
 
-/*void lol()*/
-/*{*/
-        /*array = generate_array(arraylen, 1);*/
-        /*scsp = get_scatter_spec(size, numprocs);*/
+/*
+ * relax
+ */
+        /* THIS WILL NOT WORK UNTIL MESSAGE PASSING IS IMPLEMENTED */
+void relax(double* srcarr, double* resarr, int arrlen, int numcols)
+{
+        int i, start, end;
+        int numrows = arrlen / numcols;
+        double sum, avg;
 
-        /*MPI_Scatterv(*/
-                        /*array,*/
-                        /*scsp->send_count,*/
-                        /*scsp->displacement,*/
-                        /*MPI_DOUBLE,*/
-                        /*0,*/
-/*}*/
+        /* THIS WILL NOT WORK UNTIL MESSAGE PASSING IS IMPLEMENTED */
+
+        for (i = start; i < end; i++) {
+                sum = srcarr[(i / numcols - 1) + (i % numcols)] +
+                        srcarr[(i / numcols) + (i % numcols + 1)] +
+                        srcarr[(i / numcols + 1) + (i % numcols)] +
+                        srcarr[(i / numcols) + (i % numcols - 1)];
+                avg = sum / 4;
+        }
+}
 
 int main(int argc, char **argv)
 {
@@ -125,39 +122,51 @@ int main(int argc, char **argv)
                 MPI_Abort(MPI_COMM_WORLD, rc);
                 exit(1);
         }
-
         MPI_Comm_size(MPI_COMM_WORLD, &numprocs);
         MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
         MPI_Get_processor_name(name, &namelen);
 
-        /*printf("numprocs: %d, my rank: %d, running on: %s\n",*/
-                        /*numprocs,*/
-                        /*myrank,*/
-                        /*name);*/
-
         int size, precision, arraylen;
-        double *sen_array; // send buffer
-        double *rec_array; // receive buffer
-        struct scatter_spec *scsp; // contains send counts and displacements
+        double *full_array, *source_array;
+        int *send_count = malloc(numprocs * sizeof(int));
+        int *displacement = malloc(numprocs * sizeof(int));
+
         handle_args(argc, argv, &size, &precision, &arraylen);
-        scsp = get_scatter_spec(size, numprocs);
-        rec_array = malloc(scsp->send_count[myrank] * sizeof(double));
+        get_indexes(size, numprocs, send_count, displacement);
+        source_array = malloc(send_count[myrank] * sizeof(double));
         if (myrank == 0) {
-                sen_array = generate_array(size, 1);
+                full_array = malloc(arraylen * sizeof(double));
+                generate_array(arraylen, 1, full_array);
+                print_array(full_array, size, size);
         } else {
-                sen_array = NULL;
+                full_array = NULL;
         }
 
-        MPI_Scatterv(sen_array, scsp->send_count, scsp->displacement, MPI_DOUBLE,
-                        &rec_array[0], arraylen, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(full_array,
+                        send_count,
+                        displacement,
+                        MPI_DOUBLE,
+                        &source_array[0],
+                        arraylen,
+                        MPI_DOUBLE,
+                        0,
+                        MPI_COMM_WORLD);
+        free(full_array);
 
-        printf("I will get %d elements\n", scsp->send_count[myrank]);
+        /* wait for everyone to recieve their pieces */
+        MPI_Barrier(MPI_COMM_WORLD);
 
-        free(sen_array);
-        free(scsp->displacement);
-        free(scsp->send_count);
-        free(scsp);
-        // receive scattered pieces
+        /* make a copy of initial array, this will be the results array */
+        double *result_array = malloc(send_count[myrank] * sizeof(double));
+
+        /*relax(source_array,*/
+                        /*result_array,*/
+                        /*send_count[myrank],*/
+                        /*size);*/
+        free(source_array);
+        free(result_array);
+        free(displacement);
+        free(send_count);
 
         // enter loop, calculating averages
         // gather up pieces of array
