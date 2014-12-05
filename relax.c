@@ -4,9 +4,11 @@
 #include <time.h>
 #include <math.h>
 #include <mpi.h>
+#include <unistd.h>
 
 #define TOP 0
 #define BOTTOM 1
+
 /*
  * handle_args
  * root process must do a few extra things before starting
@@ -171,8 +173,8 @@ void send_receive(double *arr, int *arrlen, int rank, int ncols, int numprocs)
         for (i = 0; i < 2; i++) {
                 if ((rank + i) % 2 == 0) {
                         /* send/recv with next proc */
-                        /*if (rank == numprocs - 1) break;*/
-                        MPI_Sendrecv(
+                        if (rank < numprocs - 1) {
+                                MPI_Sendrecv(
                                         &arr[arrlen[rank] - (2 * ncols) + 1],
                                         ncols - 2,
                                         MPI_DOUBLE,
@@ -185,13 +187,12 @@ void send_receive(double *arr, int *arrlen, int rank, int ncols, int numprocs)
                                         TOP,
                                         MPI_COMM_WORLD,
                                         &STATUS);
-
+                        }
                 } else {
                         /* send/recv with previous proc */
-                        /*if (rank == 0) break;*/
-                        MPI_Sendrecv(
-                                        &arr[ncols + 1],
-                                        ncols - 2,
+                        if (rank > 0) {
+                                MPI_Sendrecv(
+                                        &arr[ncols + 1], ncols - 2,
                                         MPI_DOUBLE,
                                         rank - 1,
                                         TOP,
@@ -202,9 +203,9 @@ void send_receive(double *arr, int *arrlen, int rank, int ncols, int numprocs)
                                         BOTTOM,
                                         MPI_COMM_WORLD,
                                         &STATUS);
+                        }
                 }
         }
-
 }
 
 int main(int argc, char **argv)
@@ -258,7 +259,7 @@ int main(int argc, char **argv)
                         0,
                         MPI_COMM_WORLD);
 
-        MPI_Barrier(MPI_COMM_WORLD);
+        /*MPI_Barrier(MPI_COMM_WORLD);*/
 
         /* copy contents of source_array into result_array */
         memcpy(result_array, source_array,
@@ -277,7 +278,7 @@ int main(int argc, char **argv)
 
         /* reduce to check when finished? */
 
-        MPI_Barrier(MPI_COMM_WORLD);
+        /*MPI_Barrier(MPI_COMM_WORLD);*/
 
         /* Gather pieces of array back together again */
         int offset;
