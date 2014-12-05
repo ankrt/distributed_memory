@@ -56,13 +56,13 @@ void generate_Larray(int size, double *array)
  * print_array
  * print to stdout in square form
  */
-void print_array(double *array, int nrow, int ncol)
+void print_array(double *array, int nrows, int ncols)
 {
         int i, j;
         int index = 0;
-        for (i = 0; i < nrow; i++) {
-                for (j = 0; j < ncol; j++) {
-                        if (i == 0 || i == nrow - 1) {
+        for (i = 0; i < nrows; i++) {
+                for (j = 0; j < ncols; j++) {
+                        if (i == 0 || i == nrows - 1) {
                                 printf("\x1b[32m%f\t\x1b[0m", array[index]);
                         } else {
                                 printf("%f\t", array[index]);
@@ -79,33 +79,48 @@ void print_array(double *array, int nrow, int ncol)
  * given the size of the array and the number of processors
  * work out the send counts and displacemnets for the array
  */
-void get_indexes(int rowlen, int numprocs, int *arrlen, int *dsp)
+void get_indexes(int ncols, int numprocs, int *send_count, int *send_displ, int *recv_count, int *recv_displ)
 {
-        int inner_rowlen = rowlen - 2;
-        int chunk = inner_rowlen / numprocs;
-        int remainder = inner_rowlen % numprocs;
+        int inner_ncols = ncols - 2;
+        int chunk = inner_ncols / numprocs;
+        int remainder = inner_ncols % numprocs;
         int i;
 
         /* allocate complete rows to processors */
+        /* and add 2 overlapping rows for each processor */
         for (i = 0; i < numprocs; i++) {
-                arrlen[i] = (chunk * rowlen) + (2 * rowlen);
+                send_count[i] = (chunk * ncols) + (2 * ncols);
         }
         i = 0;
         while (remainder > 0) {
-                arrlen[i] += rowlen;
+                send_count[i] += ncols;
                 remainder--;
                 i++;
                 if (i == numprocs - 1) i = 0;
         }
 
-        /* get the dsp within the array */
+        /* get the send_displ within the array */
         /* and account for the overlapped rows */
         for (i = 0; i < numprocs; i++) {
                 if (i == 0) {
-                        dsp[i] = 0;
+                        send_displ[i] = 0;
                 } else {
-                        dsp[i] = dsp[i - 1] +
-                                arrlen[i - 1] - (2 * rowlen);
+                        send_displ[i] = send_displ[i - 1] +
+                                send_count[i - 1] - (2 * ncols);
+                }
+        }
+
+        /* work out the recv counts and displacements */
+        for (i = 0; i < numprocs; i++) {
+                if (i == 0 || i == numprocs - 1) {
+                        recv_count[i] = send_count[i] - ncols;
+                } else {
+                        recv_count[i] = send_count[i] - (2 * ncols);
+                }
+                if (i == 0) {
+                        recv_displ[i] = 0;
+                } else {
+                        recv_displ[i] = recv_displ[i - 1] + recv_count[i - 1];
                 }
         }
 }
@@ -113,18 +128,18 @@ void get_indexes(int rowlen, int numprocs, int *arrlen, int *dsp)
 /*
  * relax
  */
-void relax(double *srcarr, double *resarr, int arrlen, int numcols)
+void relax(double *srcarr, double *resarr, int arrlen, int ncols)
 {
         int i, j, position;
-        int numrows = arrlen / numcols;
+        int numrows = arrlen / ncols;
         double sum, avg;
 
         for (i = 1; i < numrows - 1; i++) {
-                for (j = 1; j < numcols - 1; j++) {
-                        position = (i * numcols) + j;
-                        sum = srcarr[position - numcols] +
+                for (j = 1; j < ncols - 1; j++) {
+                        position = (i * ncols) + j;
+                        sum = srcarr[position - ncols] +
                                 srcarr[position + 1] +
-                                srcarr[position + numcols] +
+                                srcarr[position + ncols] +
                                 srcarr[position - 1];
                         avg = sum / 4;
                         resarr[position] = avg;
@@ -144,20 +159,9 @@ void swap(double **srcarr, double **resarr)
 }
 
 /*
- * get_overlap
- * return the number of 'extra' elements (rows) that a process has
- */
-int get_overlap(int rank, int numprocs, int ncols)
-{
-        if (rank == 0 || rank == numprocs - 1) {
-                return ncols;
-        } else {
-                return 2 * ncols;
-        }
-}
-
-/*
  * send_receive
+ * this can communicate all rows in two steps
+ * using alternating pairs of processors
  */
 void send_receive(double *arr, int *arrlen, int rank, int ncols, int numprocs)
 {
@@ -166,8 +170,8 @@ void send_receive(double *arr, int *arrlen, int rank, int ncols, int numprocs)
 
         for (i = 0; i < 2; i++) {
                 if ((rank + i) % 2 == 0) {
-                        // send/rec with next proc
-                        if (rank == numprocs - 1) break;
+                        /* send/recv with next proc */
+                        /*if (rank == numprocs - 1) break;*/
                         MPI_Sendrecv(
                                         &arr[arrlen[rank] - (2 * ncols) + 1],
                                         ncols - 2,
@@ -183,8 +187,8 @@ void send_receive(double *arr, int *arrlen, int rank, int ncols, int numprocs)
                                         &STATUS);
 
                 } else {
-                        // send/rec with previous proc
-                        if (rank == 0) break;
+                        /* send/recv with previous proc */
+                        /*if (rank == 0) break;*/
                         MPI_Sendrecv(
                                         &arr[ncols + 1],
                                         ncols - 2,
@@ -223,11 +227,15 @@ int main(int argc, char **argv)
         double *full_array;
         double *source_array;
         double *result_array;
-        int *myarraylen = malloc(numprocs * sizeof(int));
-        int *displacement = malloc(numprocs * sizeof(int));
+        /* TODO: refactor these into a struct */
+        int *send_count = malloc(numprocs * sizeof(int));
+        int *recv_count = malloc(numprocs * sizeof(int));
+        int *send_displ = malloc(numprocs * sizeof(int));
+        int *recv_displ = malloc(numprocs * sizeof(int));
 
         handle_args(argc, argv, &size, &precision, &arraylen);
-        get_indexes(size, numprocs, myarraylen, displacement);
+        get_indexes(size, numprocs, send_count, send_displ,
+                        recv_count, recv_displ);
         if (myrank == 0) {
                 full_array = malloc(arraylen * sizeof(double));
                 /*generate_array(arraylen, 1, full_array);*/
@@ -236,12 +244,13 @@ int main(int argc, char **argv)
                 full_array = NULL;
         }
 
-        source_array = malloc(myarraylen[myrank] * sizeof(double));
-        result_array = malloc(myarraylen[myrank] * sizeof(double));
+        if (myrank == 0) print_array(full_array, size, size);
+        source_array = malloc(send_count[myrank] * sizeof(double));
+        result_array = malloc(send_count[myrank] * sizeof(double));
 
         MPI_Scatterv(full_array,
-                        myarraylen,
-                        displacement,
+                        send_count,
+                        send_displ,
                         MPI_DOUBLE,
                         &source_array[0],
                         arraylen,
@@ -253,35 +262,51 @@ int main(int argc, char **argv)
 
         /* copy contents of source_array into result_array */
         memcpy(result_array, source_array,
-                        (myarraylen[myrank] * sizeof(double)));
+                        (send_count[myrank] * sizeof(double)));
 
-        /*if (myrank == 0) print_array(source_array, (myarraylen[myrank] / size), size);*/
         int i = 0;
         do {
-                relax(source_array, result_array, myarraylen[myrank], size);
+                relax(source_array, result_array, send_count[myrank], size);
                 swap(&source_array, &result_array);
-                print_array(source_array, (myarraylen[myrank] / size), size);
                 if (numprocs > 1) {
-                        send_receive(source_array, myarraylen,
+                        send_receive(source_array, send_count,
                                         myrank, size, numprocs);
                 }
                 i++;
-        } while (i < 1);
+        } while (i < 10);
 
-        /*[>print_array(source_array, (myarraylen[myrank] / size), size);<]*/
-        /*// reduce to*/
+        /* reduce to check when finished? */
 
-        /*MPI_Barrier(MPI_COMM_WORLD);*/
+        MPI_Barrier(MPI_COMM_WORLD);
 
-        /*[> Gather pieces of array back together again <]*/
-        /*[> update own indexing <]*/
-        /*int overlap = get_overlap(myrank, numprocs, size);*/
+        /* Gather pieces of array back together again */
+        int offset;
+        if (myrank == 0) {
+                offset = 0;
+        } else {
+                offset = size;
+        }
+        MPI_Gatherv(
+                        &source_array[offset],
+                        recv_count[myrank],
+                        MPI_DOUBLE,
+                        full_array,
+                        recv_count,
+                        recv_displ,
+                        MPI_DOUBLE,
+                        0,
+                        MPI_COMM_WORLD);
 
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        if (myrank == 0) print_array(full_array, size, size);
 
         free(source_array);
         free(result_array);
-        free(displacement);
-        free(myarraylen);
+        free(send_count);
+        free(recv_count);
+        free(send_displ);
+        free(recv_displ);
         free(full_array);
 
         MPI_Finalize();
