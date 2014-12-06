@@ -64,7 +64,7 @@ void print_array(double *array, int nrows, int ncols)
         int index = 0;
         for (i = 0; i < nrows; i++) {
                 for (j = 0; j < ncols; j++) {
-                        if (i == 0 || i == nrows - 1) {
+                        if (i == 0 || i == nrows - 1 || j == 0 || j == nrows - 1) {
                                 printf("\x1b[32m%f\t\x1b[0m", array[index]);
                         } else {
                                 printf("%f\t", array[index]);
@@ -129,12 +129,14 @@ void get_indexes(int ncols, int numprocs, int *send_count, int *send_displ, int 
 
 /*
  * relax
+ * set flag to true when numbers are within precision
  */
-void relax(double *srcarr, double *resarr, int arrlen, int ncols)
+int relax(double *srcarr, double *resarr, int arrlen, int ncols, double tolerance)
 {
         int i, j, position;
         int numrows = arrlen / ncols;
-        double sum, avg;
+        int flag = 0, done = 0;
+        double sum, avg, diff;
 
         for (i = 1; i < numrows - 1; i++) {
                 for (j = 1; j < ncols - 1; j++) {
@@ -145,8 +147,29 @@ void relax(double *srcarr, double *resarr, int arrlen, int ncols)
                                 srcarr[position - 1];
                         avg = sum / 4;
                         resarr[position] = avg;
+                        diff = fabs(srcarr[position] - resarr[position]);
+                        /*printf("Pos: %d, Diff: %f\n", position, diff);*/
+                        if (diff > tolerance) {
+                                flag = 1;
+                                break;
+                        }
                 }
+                if (flag) break;
         }
+        for (; i < numrows - 1; i++) {
+                for (; j < ncols - 1; j++) {
+                        position = (i * ncols) + j;
+                        sum = srcarr[position - ncols] +
+                                srcarr[position + 1] +
+                                srcarr[position + ncols] +
+                                srcarr[position - 1];
+                        avg = sum / 4;
+                        resarr[position] = avg;
+                }
+                j = 1;
+        }
+        if (flag == 0) done = 1;
+        return done;
 }
 
 /*
@@ -208,6 +231,24 @@ void send_receive(double *arr, int *arrlen, int rank, int ncols, int numprocs)
         }
 }
 
+/*
+ * must_continue
+ * check whether computation is complete
+ */
+/*int must_continue(int *local_complete)*/
+/*{*/
+        /*int global_complete = 0;*/
+        /*MPI_Reduce(*/
+                        /*local_complete,*/
+                        /*&global_complete,*/
+                        /*1,*/
+                        /*MPI_INT,*/
+                        /*MPI_LAND,*/
+                        /*0,*/
+                        /*MPI_COMM_WORLD);*/
+        /*return global_complete;*/
+/*}*/
+
 int main(int argc, char **argv)
 {
         int rc, numprocs, myrank, namelen;
@@ -233,19 +274,21 @@ int main(int argc, char **argv)
         int *recv_count = malloc(numprocs * sizeof(int));
         int *send_displ = malloc(numprocs * sizeof(int));
         int *recv_displ = malloc(numprocs * sizeof(int));
+        int local_complete = 0;
+        int global_complete = 0;
+        int iterations = 0;
 
         handle_args(argc, argv, &size, &precision, &arraylen);
         get_indexes(size, numprocs, send_count, send_displ,
                         recv_count, recv_displ);
         if (myrank == 0) {
                 full_array = malloc(arraylen * sizeof(double));
-                /*generate_array(arraylen, 1, full_array);*/
-                generate_Larray(size, full_array);
+                generate_array(arraylen, 1, full_array);
+                /*generate_Larray(size, full_array);*/
         } else {
                 full_array = NULL;
         }
 
-        if (myrank == 0) print_array(full_array, size, size);
         source_array = malloc(send_count[myrank] * sizeof(double));
         result_array = malloc(send_count[myrank] * sizeof(double));
 
@@ -259,26 +302,28 @@ int main(int argc, char **argv)
                         0,
                         MPI_COMM_WORLD);
 
-        /*MPI_Barrier(MPI_COMM_WORLD);*/
-
         /* copy contents of source_array into result_array */
         memcpy(result_array, source_array,
                         (send_count[myrank] * sizeof(double)));
 
-        int i = 0;
+        double tolerance = (double) 1 / precision;
         do {
-                relax(source_array, result_array, send_count[myrank], size);
+                local_complete = relax(source_array, result_array, send_count[myrank], size, tolerance);
                 swap(&source_array, &result_array);
                 if (numprocs > 1) {
                         send_receive(source_array, send_count,
                                         myrank, size, numprocs);
                 }
-                i++;
-        } while (i < 10);
+                MPI_Allreduce(
+                                &local_complete,
+                                &global_complete,
+                                1,
+                                MPI_INT,
+                                MPI_LAND,
+                                MPI_COMM_WORLD);
+                iterations++;
+        } while (global_complete == 0);
 
-        /* reduce to check when finished? */
-
-        /*MPI_Barrier(MPI_COMM_WORLD);*/
 
         /* Gather pieces of array back together again */
         int offset;
@@ -298,9 +343,7 @@ int main(int argc, char **argv)
                         0,
                         MPI_COMM_WORLD);
 
-        MPI_Barrier(MPI_COMM_WORLD);
-
-        if (myrank == 0) print_array(full_array, size, size);
+        if (myrank == 0) printf("%d\n", iterations);
 
         free(source_array);
         free(result_array);
