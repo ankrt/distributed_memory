@@ -31,4 +31,6 @@
 # Other
 nodes
 *.pbs
-picp.sh
+*.sh
+jobs/
+jobs/*

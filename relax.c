@@ -28,6 +28,7 @@ void handle_args(int argc, char **argv, int *s, int *p, int *arrlen)
 /*
  * generate_array
  * generate an array and fill with random numbers
+ * and below, generate an L-matrix
  */
 void generate_array(int length, int randwanted, double *array)
 {
@@ -64,11 +65,7 @@ void print_array(double *array, int nrows, int ncols)
         int index = 0;
         for (i = 0; i < nrows; i++) {
                 for (j = 0; j < ncols; j++) {
-                        if (i == 0 || i == nrows - 1 || j == 0 || j == nrows - 1) {
-                                printf("\x1b[32m%f\t\x1b[0m", array[index]);
-                        } else {
-                                printf("%f\t", array[index]);
-                        }
+                printf("%f\t", array[index]);
                         index++;
                 }
                 printf("\n");
@@ -81,7 +78,8 @@ void print_array(double *array, int nrows, int ncols)
  * given the size of the array and the number of processors
  * work out the send counts and displacemnets for the array
  */
-void get_indexes(int ncols, int numprocs, int *send_count, int *send_displ, int *recv_count, int *recv_displ)
+void get_indexes(int ncols, int numprocs, int *send_count, int *send_displ,
+                int *recv_count, int *recv_displ)
 {
         int inner_ncols = ncols - 2;
         int chunk = inner_ncols / numprocs;
@@ -131,7 +129,8 @@ void get_indexes(int ncols, int numprocs, int *send_count, int *send_displ, int 
  * relax
  * set flag to true when numbers are within precision
  */
-int relax(double *srcarr, double *resarr, int arrlen, int ncols, double tolerance)
+int relax(double *srcarr, double *resarr, int arrlen, int ncols,
+                double tolerance)
 {
         int i, j, position;
         int numrows = arrlen / ncols;
@@ -148,7 +147,6 @@ int relax(double *srcarr, double *resarr, int arrlen, int ncols, double toleranc
                         avg = sum / 4;
                         resarr[position] = avg;
                         diff = fabs(srcarr[position] - resarr[position]);
-                        /*printf("Pos: %d, Diff: %f\n", position, diff);*/
                         if (diff > tolerance) {
                                 flag = 1;
                                 break;
@@ -156,6 +154,9 @@ int relax(double *srcarr, double *resarr, int arrlen, int ncols, double toleranc
                 }
                 if (flag) break;
         }
+        /* using the 'break out' avoids potentially millions */
+        /* of comparison operations and therefore can speed */
+        /* up runtime on very large matrices */
         for (; i < numrows - 1; i++) {
                 for (; j < ncols - 1; j++) {
                         position = (i * ncols) + j;
@@ -231,29 +232,10 @@ void send_receive(double *arr, int *arrlen, int rank, int ncols, int numprocs)
         }
 }
 
-/*
- * must_continue
- * check whether computation is complete
- */
-/*int must_continue(int *local_complete)*/
-/*{*/
-        /*int global_complete = 0;*/
-        /*MPI_Reduce(*/
-                        /*local_complete,*/
-                        /*&global_complete,*/
-                        /*1,*/
-                        /*MPI_INT,*/
-                        /*MPI_LAND,*/
-                        /*0,*/
-                        /*MPI_COMM_WORLD);*/
-        /*return global_complete;*/
-/*}*/
-
 int main(int argc, char **argv)
 {
         int rc, numprocs, myrank, namelen;
         char name[MPI_MAX_PROCESSOR_NAME];
-        /*MPI_Status STATUS;*/
 
         rc = MPI_Init(&argc, &argv);
         if (rc != MPI_SUCCESS) {
@@ -269,7 +251,6 @@ int main(int argc, char **argv)
         double *full_array;
         double *source_array;
         double *result_array;
-        /* TODO: refactor these into a struct */
         int *send_count = malloc(numprocs * sizeof(int));
         int *recv_count = malloc(numprocs * sizeof(int));
         int *send_displ = malloc(numprocs * sizeof(int));
@@ -285,6 +266,7 @@ int main(int argc, char **argv)
                 full_array = malloc(arraylen * sizeof(double));
                 generate_array(arraylen, 1, full_array);
                 /*generate_Larray(size, full_array);*/
+                /*print_array(full_array, size, size);*/
         } else {
                 full_array = NULL;
         }
@@ -292,14 +274,8 @@ int main(int argc, char **argv)
         source_array = malloc(send_count[myrank] * sizeof(double));
         result_array = malloc(send_count[myrank] * sizeof(double));
 
-        MPI_Scatterv(full_array,
-                        send_count,
-                        send_displ,
-                        MPI_DOUBLE,
-                        &source_array[0],
-                        arraylen,
-                        MPI_DOUBLE,
-                        0,
+        MPI_Scatterv(full_array, send_count, send_displ, MPI_DOUBLE,
+                        &source_array[0], arraylen, MPI_DOUBLE, 0,
                         MPI_COMM_WORLD);
 
         /* copy contents of source_array into result_array */
@@ -308,19 +284,15 @@ int main(int argc, char **argv)
 
         double tolerance = (double) 1 / precision;
         do {
-                local_complete = relax(source_array, result_array, send_count[myrank], size, tolerance);
+                local_complete = relax(source_array, result_array,
+                                send_count[myrank], size, tolerance);
                 swap(&source_array, &result_array);
                 if (numprocs > 1) {
-                        send_receive(source_array, send_count,
-                                        myrank, size, numprocs);
+                        send_receive(source_array, send_count, myrank, size,
+                                        numprocs);
                 }
-                MPI_Allreduce(
-                                &local_complete,
-                                &global_complete,
-                                1,
-                                MPI_INT,
-                                MPI_LAND,
-                                MPI_COMM_WORLD);
+                MPI_Allreduce(&local_complete, &global_complete, 1, MPI_INT,
+                                MPI_LAND, MPI_COMM_WORLD);
                 iterations++;
         } while (global_complete == 0);
 
@@ -332,17 +304,11 @@ int main(int argc, char **argv)
         } else {
                 offset = size;
         }
-        MPI_Gatherv(
-                        &source_array[offset],
-                        recv_count[myrank],
-                        MPI_DOUBLE,
-                        full_array,
-                        recv_count,
-                        recv_displ,
-                        MPI_DOUBLE,
-                        0,
+        MPI_Gatherv(&source_array[offset], recv_count[myrank], MPI_DOUBLE,
+                        full_array, recv_count, recv_displ, MPI_DOUBLE, 0,
                         MPI_COMM_WORLD);
 
+        /*if (myrank ==0) print_array(full_array, size, size);*/
         if (myrank == 0) printf("%d\n", iterations);
 
         free(source_array);
